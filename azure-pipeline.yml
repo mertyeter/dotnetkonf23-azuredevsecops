@@ -1,0 +1,106 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'ubuntu-latest' 
+  
+steps:
+- task: UseDotNet@2
+  displayName: 'Use dotnet 3.1.x for the CredScan analyzer dependency'
+  inputs:
+    version: 3.1.x
+- task: UseDotNet@2
+  displayName: 'Use dotnet 6.0.x for the MicrosoftSecurityDevOps build task dependency'
+  inputs:
+    version: 6.0.x
+- task: UseDotNet@2
+  displayName: 'Use dotnet 7.0.x for the project dependency'
+  inputs:
+    version: 7.0.x
+
+
+- task: MicrosoftSecurityDevOps@1
+  displayName: 'Microsoft Security DevOps (Secrets and IaC)'
+  inputs:
+    categories: 'secrets,IaC'
+
+- task: SonarQubePrepare@5
+  displayName: Prepare analysis on SonarQube
+  inputs:
+    SonarQube: 'SonarQube'
+    scannerMode: 'MSBuild'
+    projectKey: 'dotnetkonf23'
+    projectName: 'dotnetkonf23'
+
+- task: PowerShell@2
+  displayName: Set SONARQUBE_SCANNER_PARAMS
+  inputs:
+    targetType: 'inline'
+    script: |
+      $params = "$env:SONARQUBE_SCANNER_PARAMS" -replace '"sonar.branch.name":"[\w,/,-]*"\,?'
+      Write-Host "##vso[task.setvariable variable=SONARQUBE_SCANNER_PARAMS]$params"
+
+- task: DotNetCoreCLI@2
+  displayName: 'Build Projects'
+  inputs:
+    command: 'build'
+    projects: '**/*.csproj'
+
+- task: Bash@3  
+  displayName: Check NuGet Vulnerabilities
+  continueOnError: true
+  inputs:
+    targetType: 'inline'
+    script: |
+      vulnerableProjects=0
+      project_dirs=$(find "$(pwd -P)" -name "*.csproj" -exec dirname {} \;)
+
+      for project_dir in $project_dirs
+      do
+        cd $project_dir
+        dotnet list package --vulnerable --include-transitive 2>&1 | tee vulnerability.log      
+        
+        grep -q -i "critical\|high\|moderate" vulnerability.log
+        if [ $? -eq 0 ]; then
+            ((vulnerableProjects=vulnerableProjects+1))
+        fi
+      done
+
+      if [ $vulnerableProjects -gt 0 ]; then
+        echo "Security vulnerabilities found!"
+        exit 1
+      fi
+
+- task: Bash@3
+  displayName: Check Deprecated Packages
+  continueOnError: true
+  inputs:
+    targetType: 'inline'
+    script: |
+      deprecatedProjects=0
+      project_dirs=$(find "$(pwd -P)" -name "*.csproj" -exec dirname {} \;)
+
+      for project_dir in $project_dirs
+      do
+        cd $project_dir
+        dotnet list package --deprecated 2>&1 | tee deprecated.log      
+        
+        grep -q -i "legacy\|critical bugs\|other" deprecated.log 
+
+        if [ $? -eq 0 ]; then
+            ((deprecatedProjects=deprecatedProjects+1))
+        fi
+      done
+
+      if [ $deprecatedProjects -gt 0 ]; then
+        echo "Deprecated packages found!"
+        exit 1
+      fi
+      
+- task: SonarQubeAnalyze@5
+  displayName: Run Code Analysis
+      
+- task: SonarQubePublish@5
+  displayName: Publish Quality Gate Result
+  inputs:
+    pollingTimeoutSec: '300'
