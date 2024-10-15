@@ -44,3 +44,7 @@ To build and run the project locally, use the following commands:
 ```sh
 dotnet build
 dotnet run
+```
+
+## License
+This project is licensed under the MIT License. See the LICENSE file for details.
